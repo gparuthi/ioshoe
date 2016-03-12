@@ -25,24 +25,25 @@ using IoShoe::EventStorage;
  */
 // IO
 int buttonPin = 3;
-int ledPin = 2;
 
 // ========= Shoelace LED vars =============
 long lastLightUpTime = 0;
 #define SHOELACE_LED_ON_TIME 1000
-int shoelacePin = 2;
+int shoelacePin = 6;
 bool shoelaceState = false; // determine whether shoelace led is on or off
 
 #define BROADCAST_DELAY 1000
 
 // ========= Tactile Switch & Debouncer ====
-int ledState = LOW;
+
 int buttonState;
 int lastButtonState = LOW;
 long lastDebounceTime = 0;
 long debounceDelay = 50;
 
 
+// === Time of flight ====
+volatile uint32_t round_trip_timer = 0;
 
 // ========= MsgStorage ====================
 EventStorage evtStorage = EventStorage();
@@ -55,7 +56,8 @@ EventStorage evtStorage = EventStorage();
 RF24 radio(7,8);
 /**********************************************************/
 
-byte addresses[][6] = {"RCh","RCh"};
+// Use the same address for both devices
+uint8_t address[] = { "radio" };
 
 struct dataStruct{
   unsigned long _micros;
@@ -65,12 +67,12 @@ struct dataStruct{
 
 // ========= Main ==========================
 void setup() {
-  pinMode(ledPin, OUTPUT);
+  pinMode(shoelacePin, OUTPUT);
   pinMode(buttonPin, INPUT);
 
 
   // set initial LED state
-  digitalWrite(ledPin, ledState);
+  digitalWrite(shoelacePin, shoelaceState);
 
   Serial.begin(115200);
   Serial.println(F("Light broadcasting using RF24"));
@@ -80,37 +82,33 @@ void setup() {
 
   // Set the PA Level low to prevent power supply related issues since this is a
  // getting_started sketch, and the likelihood of close proximity of the devices. RF24_PA_MAX is default.
-  radio.setPALevel(RF24_PA_LOW);
+  // radio.setPALevel(RF24_PA_LOW);
   
   // Open a writing and reading pipe on each radio, with opposite addresses
 
-  radio.openWritingPipe(addresses[1]);
-  radio.openReadingPipe(1,addresses[0]);
-  
-  myData.value = 0.0;
-
-  // Start the radio listening for data
+  radio.openWritingPipe(address);             // communicate back and forth.  One listens on it, the other talks to it.
+  radio.openReadingPipe(1,address); 
+    // Start the radio listening for data
   radio.startListening();
+
+  attachInterrupt(0, check_radio, LOW);             // Attach interrupt handler to interrupt #0 (using pin 2) on BOTH the sender and receiver
 }
 
 void send() {
   radio.stopListening();                                    // First, stop listening so we can talk.
 
-
   Serial.println(F("Now sending"));
 
   myData._micros = micros();
-  if (!radio.write( &myData, sizeof(myData) )){
-   Serial.println(F("failed"));
-  }
-    radio.startListening();                                    // Now, continue listening
+
+  radio.startWrite(&myData, sizeof(myData),0);
+
+  // if (!radio.write( &myData, sizeof(myData) )){
+  //  Serial.println(F("failed"));
+  // }
+   // Now, continue listening
     Serial.print(F("Sent data "));
     Serial.println(myData._micros);  
-    // digitalWrite(ledPin, HIGH);
-    // // Don't do anything for the delay time
-    //  delay(1000);
-    //  digitalWrite(ledPin, LOW);
-
     evtStorage.saveEvent(myData._micros);
 
   }
@@ -147,7 +145,6 @@ void loop() {
           buttonState = reading; 
     
           if(buttonState == HIGH) {
-            //flashLed(ledPin, ON_EVT_GENERATED);
     
             digitalWrite(shoelacePin, HIGH);
             shoelaceState = true;
@@ -161,58 +158,43 @@ void loop() {
     lastButtonState = reading;
   }
 
+   
+ }
 
+ void check_radio(void)                                // Receiver role: Does nothing!  All the work is in IRQ
+{
+  
+  bool tx,fail,rx;
+  radio.whatHappened(tx,fail,rx);                     // What happened?
 
-/****************** Pong Back Role ***************************/
-
-
-    unsigned long got_time;
+ 
+  // If data is available, handle it accordingly
+  if ( rx ){
     
-    radio.startListening();
+    bool rpd = radio.testRPD();
 
-    if( radio.available()){
+    // Read in the data
+    uint8_t received;
+    radio.read( &myData, sizeof(myData) );             // Get the payload
 
-
-      bool rpd = radio.testRPD();
-                                                                    // Variable for the received timestamp
-      while (radio.available()) {                                   // While there is data ready
-        signalStrength = rpd + 1;
-        radio.read( &myData, sizeof(myData) );             // Get the payload
-      }
-     
-      radio.stopListening();       
-
-      
-      Serial.print(F("Got signal: "));
+    // If this is a ping, send back a pong
+    Serial.print(F("Got signal: "));
       Serial.print(myData._micros); 
       Serial.print(F(", Hops = "));
       Serial.print(myData.value); 
       Serial.print(F(", Strength =  "));
-      Serial.println(signalStrength);  
+      Serial.println(signalStrength); 
       
-      // if (signalStrength < 2)
-      // {
-      //   // Serial.print("<far>");
-      //   return;
-      // }
-
-        // if the gottime is not in hashset then add got time in hashset and set
-        // else do nothing
-        bool exist = evtStorage.checkEventExist(myData._micros);
+    bool exist = evtStorage.checkEventExist(myData._micros);
 
         if(!exist) {
           digitalWrite(shoelacePin, HIGH);
           shoelaceState = true;
           lastLightUpTime = millis();
-
           delay(BROADCAST_DELAY);
-          
           myData.value++;
-
-          radio.write( &myData, sizeof(myData) );  
-
+          radio.startWrite( &myData, sizeof(myData), 0);   // 0 is quite important but i dont know why yet
           evtStorage.saveEvent(myData._micros);
-
         } else {
           Serial.print("signal exists: ");  
           Serial.print(myData._micros);  
@@ -220,10 +202,18 @@ void loop() {
           Serial.print(myData.value);
           Serial.println("");  
         }
-      }
 
-   
- }
+  }
+
+
+  radio.startListening(); 
+
+  // Start listening if transmission is complete
+  if( tx || fail ){
+     radio.startListening(); 
+     Serial.println(tx ? F(":OK") : F(":Fail"));
+  }  
+}
 
 
 
