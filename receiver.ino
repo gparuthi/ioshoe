@@ -59,11 +59,21 @@ RF24 radio(7,8);
 // Use the same address for both devices
 uint8_t address[] = { "radio" };
 
+
 struct dataStruct{
   unsigned long _micros;
   float value;
 }myData;
 
+// Caliberation
+
+uint8_t self_device_id = millis();
+
+struct calliberationStruct{
+  unsigned long _micros;
+  uint8_t self_device_id;
+  uint8_t receiver_device_id;
+}calliberationData;
 
 // ========= Main ==========================
 void setup() {
@@ -111,6 +121,22 @@ void send() {
     Serial.println(myData._micros);  
     evtStorage.saveEvent(myData._micros);
 
+  }
+
+ void sendCalliberationSignal() {
+  radio.stopListening();                                    // First, stop listening so we can talk.
+
+  Serial.println(F("Now sending calliberation"));
+
+  calliberationData.self_device_id = self_device_id;
+  calliberationData.receiver_device_id = 0;
+  calliberationData._micros = micros();
+
+   radio.startWrite(&calliberationData, sizeof(calliberationData),0);
+
+    Serial.print(F("Sent data "));
+    Serial.println(calliberationData._micros);  
+    evtStorage.saveEvent(calliberationData._micros);
   }
 
 unsigned long signalStrength = 0;
