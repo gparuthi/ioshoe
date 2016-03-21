@@ -25,6 +25,8 @@ using IoShoe::EventStorage;
  */
 // IO
 int buttonPin = 3;
+int ledPin = 2;
+int ledState = LOW;
 
 // ========= Shoelace LED vars =============
 long lastLightUpTime = 0;
@@ -61,19 +63,17 @@ uint8_t address[] = { "radio" };
 
 
 struct dataStruct{
+  unsigned long sourceDeviceId;
   unsigned long _micros;
-  float value;
+  unsigned long value;
+  bool signalType; // 0 = range calliberation, 1 = LED trigger
 }myData;
 
-// Caliberation
 
-uint8_t self_device_id = millis();
-
-struct calliberationStruct{
-  unsigned long _micros;
-  uint8_t self_device_id;
-  uint8_t receiver_device_id;
-}calliberationData;
+// ========= Calliberation vars =============
+long lastCalliberationTime = 0;
+#define CALLIBERATION_TIME 3000
+uint8_t DEVICE_ID;
 
 // ========= Main ==========================
 void setup() {
@@ -83,10 +83,13 @@ void setup() {
 
   // set initial LED state
   digitalWrite(shoelacePin, shoelaceState);
+  
+  randomSeed(analogRead(0));
+  DEVICE_ID = random(0, 256);
 
   Serial.begin(115200);
-  Serial.println(F("Light broadcasting using RF24"));
-
+  Serial.print(F("Light broadcasting using RF24. This device Id = "));
+  Serial.println(DEVICE_ID);
   
   radio.begin();
 
@@ -107,9 +110,10 @@ void setup() {
 void send() {
   radio.stopListening();                                    // First, stop listening so we can talk.
 
-  Serial.println(F("Now sending"));
+  Serial.print(F("Now sending DATA: "));
 
   myData._micros = micros();
+  myData.signalType = 1;
 
   radio.startWrite(&myData, sizeof(myData),0);
 
@@ -117,31 +121,42 @@ void send() {
   //  Serial.println(F("failed"));
   // }
    // Now, continue listening
-    Serial.print(F("Sent data "));
     Serial.println(myData._micros);  
     evtStorage.saveEvent(myData._micros);
+
+    radio.startListening();
 
   }
 
  void sendCalliberationSignal() {
   radio.stopListening();                                    // First, stop listening so we can talk.
 
-  Serial.println(F("Now sending calliberation"));
+  Serial.print(F("Now sending calliberation: "));
 
-  calliberationData.self_device_id = self_device_id;
-  calliberationData.receiver_device_id = 0;
-  calliberationData._micros = micros();
+  myData.sourceDeviceId = DEVICE_ID;
+  myData.value = 0;
+  myData._micros = micros();
+  myData.signalType = 0;
 
-   radio.startWrite(&calliberationData, sizeof(calliberationData),0);
-
-    Serial.print(F("Sent data "));
-    Serial.println(calliberationData._micros);  
-    evtStorage.saveEvent(calliberationData._micros);
+  Serial.println(myData._micros); 
+  radio.startWrite(&myData, sizeof(myData),0);
+  evtStorage.saveEvent(myData._micros);
+  radio.startListening();
   }
 
 unsigned long signalStrength = 0;
 
+
 void loop() {
+
+    // Send Calliberation signal
+   if ((millis() - lastCalliberationTime) > CALLIBERATION_TIME) {
+      // digitalWrite(shoelacePin, LOW); 
+      // shoelaceState = false;
+      sendCalliberationSignal();
+      lastCalliberationTime = millis();
+   } 
+  
 
    /*
    *  Update Shoelace LED state
@@ -196,22 +211,19 @@ void loop() {
  
   // If data is available, handle it accordingly
   if ( rx ){
+
     
     bool rpd = radio.testRPD();
 
     // Read in the data
-    uint8_t received;
     radio.read( &myData, sizeof(myData) );             // Get the payload
+    
+    radio.stopListening(); 
 
-    // If this is a ping, send back a pong
-    Serial.print(F("Got signal: "));
-      Serial.print(myData._micros); 
-      Serial.print(F(", Hops = "));
-      Serial.print(myData.value); 
-      Serial.print(F(", Strength =  "));
-      Serial.println(signalStrength); 
-      
-    bool exist = evtStorage.checkEventExist(myData._micros);
+    onEventReceived();
+
+    if (myData.signalType){
+       bool exist = evtStorage.checkEventExist(myData._micros);
 
         if(!exist) {
           digitalWrite(shoelacePin, HIGH);
@@ -229,6 +241,39 @@ void loop() {
           Serial.println("");  
         }
 
+
+    } else {
+      // Serial.println("=========");
+      Serial.print("Calliberation signal received from source device: ");
+      Serial.println(myData.sourceDeviceId);
+
+        if (myData.sourceDeviceId == DEVICE_ID){
+           unsigned long current_time = micros();
+           unsigned long time_elapsed = current_time - myData._micros;
+
+          // this is the ping back event that now we can use to calculate TOF
+          // time elapsed = micros() - myData._micros
+          Serial.print("Return signal received for Device = ");
+          Serial.print(myData.value);
+          Serial.print(" | Elapsed Time = ");
+          Serial.println(time_elapsed);
+
+          // store it in the running means for this DeviceId
+          // runningmeans[DEVICE_ID].update(time_elapsed)
+          } else {
+             if (myData.value==0){
+
+              // pong the signal to the sender
+              
+              myData.value = DEVICE_ID;
+              radio.startWrite( &myData, sizeof(myData), 0);
+            }
+          }
+          // Serial.println("=========");
+      }
+      
+
+   
   }
 
 
@@ -291,11 +336,16 @@ void broadcastEvent(uint8_t evt_id) {
 }
 
 
-// Detect a wireless input event (e.g, Receive a XBee message)
+// Detect a wireless input event (e.g, Receive a message)
 void onEventReceived() {
   // got a zb rx packet
-      
-
-      
+      Serial.print(F("Got signal: Type="));
+      Serial.print(myData.signalType); 
+      Serial.print(F(", micros: "));
+      Serial.print(myData._micros); 
+      Serial.print(F(", Value = "));
+      Serial.print(myData.value); 
+      Serial.print(F(", Strength =  "));
+      Serial.println(signalStrength);        
 }
 
